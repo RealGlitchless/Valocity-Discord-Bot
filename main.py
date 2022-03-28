@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 import os
-import requests
+import aiohttp
 from replit import db
 from inspect import cleandoc
 
@@ -10,6 +10,7 @@ prefix = "!vc "
 bot = commands.Bot(
     command_prefix=prefix,
     activity=discord.Game('Brug "!vc commands" for at se alle commands'))
+url = "https://api.henrikdev.xyz/valorant"
 ValoKey = os.environ['VALORANT KEY']
 header = {"X-Riot-Token": ValoKey}
 
@@ -19,32 +20,30 @@ def split_tag(riotname):
     return name[0], name[1]
 
 
-def get_player(team, rounds_played):
-    team_stats = []
-    for player in team:
-        name = player.get("name")
-        tag = player.get("tag")
-        character = player.get("character")
-        stats = player.get("stats")
-        score = stats.get("score")
-        avg_cs = score // rounds_played
-        rank = player.get("currenttier_patched")
+async def get_player(team, rounds_played):
+    async with aiohttp.ClientSession() as session:
+        team_stats = []
+        for player in team:
+            name = player.get("name")
+            tag = player.get("tag")
+            character = player.get("character")
+            stats = player.get("stats")
+            score = stats.get("score")
+            avg_cs = score // rounds_played
+            rank = player.get("currenttier_patched")
 
-        if rank == "Unrated":
-            try:
-                r = requests.get(
-                    f"https://api.henrikdev.xyz/valorant/v1/mmr/eu/{name}/{tag}"
-                )
-
-                red_data = r.json()
-                riotid = red_data.get("data")
-                rank = riotid.get("currenttierpatched")
-                if rank == None:
+            if rank == "Unrated":
+                try:
+                    async with session.get(
+                            f"{url}/v1/mmr/eu/{name}/{tag}") as r:
+                        user_data = await r.json()
+                    riotid = user_data.get("data")
+                    rank = riotid.get("currenttierpatched")
+                    if rank == None:
+                        rank = "Unranked"
+                except:
                     rank = "Unranked"
-            except:
-                rank = "Unranked"
-
-        team_stats.append([name, tag, rank, character, stats, avg_cs])
+            team_stats.append([name, tag, rank, character, stats, avg_cs])
     return team_stats
 
 
@@ -77,16 +76,17 @@ async def commands(help):
 @bot.command()
 async def status(ctx):
     # Get current status of valorant
-    try:
-        r = requests.get(
-            f"https://eu.api.riotgames.com/val/status/v1/platform-data",
-            header)
-    except:
-        return await ctx.send("Kunne ikke få status på Valorant")
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                    f"https://eu.api.riotgames.com/val/status/v1/platform-data",
+                    header) as r:
+                json_data = await r.json()
+                maintenance = json_data.get("maintenances")
+                incidents = json_data.get("incidents")
+        except:
+            return await ctx.send("Kunne ikke få status på Valorant")
 
-    json_data = r.json()
-    maintenance = json_data.get("maintenances")
-    incidents = json_data.get("incidents")
     if maintenance != None:
         await ctx.send("ctx for Valorant er lige nu: " + maintenance)
     if incidents != None:
@@ -100,33 +100,33 @@ async def offers(ctx):
     offerList = []
     skinDict = {}
     skinOnSale = []
+    async with aiohttp.ClientSession() as session:
+        try:
+            # Get featured skins
+            async with session.get(f"{url}/v1/store-featured") as r:
+                try:
+                    json_data = r.json()
+                    data = json_data.get("data")
+                    featureBundle = data.get("FeaturedBundle")
+                    items = featureBundle["Bundle"]["Items"]
+                except:
+                    return await ctx.send(
+                        "Der skete en fejl med at finde items i shoppen")
+        except:
+            return await ctx.send("Kunne ikke få adgang til de featured skins")
 
-    try:
-        # Get featured skins
-        r = requests.get(
-            f"https://api.henrikdev.xyz/valorant/v1/store-featured")
-    except:
-        return await ctx.send("Kunne ikke få adgang til de featured skins")
+        for item in items:
+            itemid = item["Item"]["ItemID"]
+            offerList.append(itemid)
 
-    try:
-        json_data = r.json()
-        data = json_data.get("data")
-        featureBundle = data.get("FeaturedBundle")
-        items = featureBundle["Bundle"]["Items"]
-    except:
-        return await ctx.send("Der skete en fejl med at finde items i shoppen")
-
-    for item in items:
-        itemid = item["Item"]["ItemID"]
-        offerList.append(itemid)
-
-    try:
-        # Get all skins
-        r1 = requests.get(f"https://valorant-api.com/v1/weapons/skins")
-        skinData = r1.json()
-        data = skinData.get("data")
-    except:
-        return await ctx.send("Kunne ikke få adgang til skins databasen")
+        try:
+            # Get all skins
+            async with session.get(
+                    f"https://valorant-api.com/v1/weapons/skins") as r:
+                skinData = await r.json()
+                data = skinData.get("data")
+        except:
+            return await ctx.send("Kunne ikke få adgang til skins databasen")
 
     for item in data:
         levels = item.get("levels")
@@ -170,20 +170,16 @@ async def søg(ctx, *, nameAndTag):
         )
 
     # Get info from API with username and tagline
-    try:
-        r = requests.get(
-            f"https://api.henrikdev.xyz/valorant/v1/mmr/eu/{username}/{tag}")
-    except:
-        return await ctx.send("Kunne ikke finde kontoen")
-
-    try:
-        # Get Rank and rating from API
-        accData = r.json()
-        data = accData.get("data")
-        rank = data.get("currenttierpatched")
-        rating = data.get("ranking_in_tier")
-    except:
-        return await ctx.send("Kunne ikke få data fra API'en")
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{url}/v1/mmr/eu/{username}/{tag}") as r:
+                # Get Rank and rating from API
+                accData = await r.json()
+                data = accData.get("data")
+                rank = data.get("currenttierpatched")
+                rating = data.get("ranking_in_tier")
+        except:
+            return await ctx.send("Kunne ikke finde kontoen")
 
     await ctx.send(f"{username}#{tag} er lige nu i {rank} med {rating} rating")
 
@@ -205,20 +201,18 @@ async def link(ctx, *, nameAndTag):
             "Navn formateret forkert.\n Kommandoen skal formateres således: '!vc søg USERNAME#TAG'"
         )
 
-    try:
-        r = requests.get(
-            f"https://api.henrikdev.xyz/valorant/v1/account/{username}/{tag}")
-        data = r.json()
-        status = data.get("status")
-    except:
-        return await ctx.send("Kunne ikke få data fra API'en")
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{url}/v1/account/{username}/{tag}") as r:
+                data = await r.json()
+                status = data.get("status")
+        except:
+            return await ctx.send("Kunne ikke finde kontoen")
 
-    if status != 200:
-        return await ctx.send("Kunne ikke finde kontoen")
-
-    db[userId] = nameAndTag
-    await ctx.send(
-        f"Kontoen {nameAndTag} er blevet tilknyttet din Discord konto")
+    if status == 200:
+        db[userId] = nameAndTag
+        await ctx.send(
+            f"Kontoen {nameAndTag} er blevet tilknyttet din Discord konto")
 
 
 @bot.command()
@@ -245,20 +239,19 @@ async def rank(ctx, *, user: discord.User = None):
     username, tag = split_tag(db[str(userId)])
 
     # Get info from API with username and tagline
-    try:
-        r = requests.get(
-            f"https://api.henrikdev.xyz/valorant/v1/mmr/eu/{username}/{tag}")
-    except:
-        return await ctx.send("Kunne ikke hente data fra API")
-
-    try:
-        # Get Rank and rating from API
-        accData = r.json()
-        data = accData.get("data")
-        rank = data.get("currenttierpatched")
-        rating = data.get("ranking_in_tier")
-    except:
-        return await ctx.send("Kunne ikke få data fra API'en")
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"{url}/v1/mmr/eu/{username}/{tag}") as r:
+                try:
+                    # Get Rank and rating from API
+                    accData = await r.json()
+                    data = accData.get("data")
+                    rank = data.get("currenttierpatched")
+                    rating = data.get("ranking_in_tier")
+                except:
+                    return await ctx.send("Kunne ikke få data fra API'en")
+        except:
+            return ctx.send("Kunne ikke finde kontoen")
 
     await ctx.send(
         f"{username}#{tag} er lige nu i {rank} med {rating} i rating")
@@ -288,55 +281,57 @@ async def seneste(ctx):
     await ctx.send("Et øjeblik mens jeg henter spildataen!")
 
     status = await ctx.send("Status: Får data fra API")
-    try:
-        r = requests.get(
-            f"https://api.henrikdev.xyz/valorant/v3/matches/eu/{username}/{tag}"
-        )
-    except:
-        return await status.edit(content="Status: Kunne ikke få seneste kampe")
 
-    await status.edit(content="Status: Loader alt data")
-    json_data = r.json()
-    data = json_data.get("data")
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(
+                    f"{url}/v3/matches/eu/{username}/{tag}") as r:
+                json_data = await r.json()
+        except:
+            return await status.edit(
+                content="Status: Kunne ikke få seneste kampe")
 
-    try:
-        metadata = data[0].get("metadata")
-    except:
-        return await status.edit(content="Der skete en fejl, prøv igen")
+        await status.edit(content="Status: Loader alt data")
+        data = json_data.get("data")
 
-    rounds_played = metadata.get("rounds_played")
+        try:
+            metadata = data[0].get("metadata")
+        except:
+            return await status.edit(content="Der skete en fejl, prøv igen")
 
-    await status.edit(content="Status: Kigger hold 1 data igennem")
-    red_team = get_player(data[0]["players"]["red"], rounds_played)
+        rounds_played = metadata.get("rounds_played")
 
-    await status.edit(content="Status: Kigger hold 2 data igennem")
-    blue_team = get_player(data[0]["players"]["blue"], rounds_played)
+        await status.edit(content="Status: Kigger hold 1 data igennem")
+        red_team = await get_player(data[0]["players"]["red"], rounds_played)
 
-    await status.edit(content="Status: Kigger general kampdata igennem")
-    teams = data[0].get("teams")
+        await status.edit(content="Status: Kigger hold 2 data igennem")
+        blue_team = await get_player(data[0]["players"]["blue"], rounds_played)
 
-    await status.edit(content="Status: Formater besked og sender")
-    match = f"""------------------------------ MATCH SUMMARY ------------------------------
-      **Hold 1:**
-      {red_team[0][0]}#{red_team[0][1]} // {red_team[0][2]} // {red_team[0][3]} // K/D/A: {red_team[0][4].get("kills")}/{red_team[0][4].get("deaths")}/{red_team[0][4].get("assists")} // Combat score: {red_team[0][5]}
-      {red_team[1][0]}#{red_team[1][1]} // {red_team[1][2]} // {red_team[1][3]} // K/D/A: {red_team[1][4].get("kills")}/{red_team[1][4].get("deaths")}/{red_team[1][4].get("assists")} // Combat score: {red_team[1][5]}
-      {red_team[2][0]}#{red_team[2][1]} // {red_team[2][2]} // {red_team[2][3]} // K/D/A: {red_team[2][4].get("kills")}/{red_team[2][4].get("deaths")}/{red_team[2][4].get("assists")} // Combat score: {red_team[2][5]}
-      {red_team[3][0]}#{red_team[3][1]} // {red_team[3][2]} // {red_team[3][3]} // K/D/A: {red_team[3][4].get("kills")}/{red_team[3][4].get("deaths")}/{red_team[3][4].get("assists")} // Combat score: {red_team[3][5]}
-      {red_team[4][0]}#{red_team[4][1]} // {red_team[4][2]} // {red_team[4][3]} // K/D/A: {red_team[4][4].get("kills")}/{red_team[4][4].get("deaths")}/{red_team[4][4].get("assists")} // Combat score: {red_team[4][5]}\n
-      
-      **Hold 2:**
-      {blue_team[0][0]}#{blue_team[0][1]} // {blue_team[0][2]} // {blue_team[0][3]} // K/D/A: {blue_team[0][4].get("kills")}/{blue_team[0][4].get("deaths")}/{blue_team[0][4].get("assists")} // Combat score: {blue_team[0][5]}
-      {blue_team[1][0]}#{blue_team[1][1]} // {blue_team[1][2]} // {blue_team[1][3]} // K/D/A: {blue_team[1][4].get("kills")}/{blue_team[1][4].get("deaths")}/{blue_team[1][4].get("assists")} // Combat score: {blue_team[1][5]}
-      {blue_team[2][0]}#{blue_team[2][1]} // {blue_team[2][2]} // {blue_team[2][3]} // K/D/A: {blue_team[2][4].get("kills")}/{blue_team[2][4].get("deaths")}/{blue_team[2][4].get("assists")} // Combat score: {blue_team[2][5]}
-      {blue_team[3][0]}#{blue_team[3][1]} // {blue_team[3][2]} // {blue_team[3][3]} // K/D/A: {blue_team[3][4].get("kills")}/{blue_team[3][4].get("deaths")}/{blue_team[3][4].get("assists")} // Combat score: {blue_team[3][5]}
-      {blue_team[4][0]}#{blue_team[4][1]} // {blue_team[4][2]} // {blue_team[4][3]} // K/D/A: {blue_team[4][4].get("kills")}/{blue_team[4][4].get("deaths")}/{blue_team[4][4].get("assists")} // Combat score: {blue_team[4][5]}
-      
-      Mode: {str(metadata.get("mode"))}
-      Kampen sluttede {str(teams["red"]["rounds_won"])} - {str(teams["blue"]["rounds_won"])} på {str(metadata.get("map"))}"""
+        await status.edit(content="Status: Kigger general kampdata igennem")
+        teams = data[0].get("teams")
 
-    user = await bot.fetch_user(str(userId))
-    await user.send(cleandoc(match))
-    await status.edit(content="PB sendt med kamp detaljer")
+        await status.edit(content="Status: Formater besked og sender")
+        match = f"""------------------------------ MATCH SUMMARY ------------------------------
+          **Hold 1:**
+          {red_team[0][0]}#{red_team[0][1]} // {red_team[0][2]} // {red_team[0][3]} // K/D/A: {red_team[0][4].get("kills")}/{red_team[0][4].get("deaths")}/{red_team[0][4].get("assists")} // Combat score: {red_team[0][5]}
+          {red_team[1][0]}#{red_team[1][1]} // {red_team[1][2]} // {red_team[1][3]} // K/D/A: {red_team[1][4].get("kills")}/{red_team[1][4].get("deaths")}/{red_team[1][4].get("assists")} // Combat score: {red_team[1][5]}
+          {red_team[2][0]}#{red_team[2][1]} // {red_team[2][2]} // {red_team[2][3]} // K/D/A: {red_team[2][4].get("kills")}/{red_team[2][4].get("deaths")}/{red_team[2][4].get("assists")} // Combat score: {red_team[2][5]}
+          {red_team[3][0]}#{red_team[3][1]} // {red_team[3][2]} // {red_team[3][3]} // K/D/A: {red_team[3][4].get("kills")}/{red_team[3][4].get("deaths")}/{red_team[3][4].get("assists")} // Combat score: {red_team[3][5]}
+          {red_team[4][0]}#{red_team[4][1]} // {red_team[4][2]} // {red_team[4][3]} // K/D/A: {red_team[4][4].get("kills")}/{red_team[4][4].get("deaths")}/{red_team[4][4].get("assists")} // Combat score: {red_team[4][5]}\n
+          
+          **Hold 2:**
+          {blue_team[0][0]}#{blue_team[0][1]} // {blue_team[0][2]} // {blue_team[0][3]} // K/D/A: {blue_team[0][4].get("kills")}/{blue_team[0][4].get("deaths")}/{blue_team[0][4].get("assists")} // Combat score: {blue_team[0][5]}
+          {blue_team[1][0]}#{blue_team[1][1]} // {blue_team[1][2]} // {blue_team[1][3]} // K/D/A: {blue_team[1][4].get("kills")}/{blue_team[1][4].get("deaths")}/{blue_team[1][4].get("assists")} // Combat score: {blue_team[1][5]}
+          {blue_team[2][0]}#{blue_team[2][1]} // {blue_team[2][2]} // {blue_team[2][3]} // K/D/A: {blue_team[2][4].get("kills")}/{blue_team[2][4].get("deaths")}/{blue_team[2][4].get("assists")} // Combat score: {blue_team[2][5]}
+          {blue_team[3][0]}#{blue_team[3][1]} // {blue_team[3][2]} // {blue_team[3][3]} // K/D/A: {blue_team[3][4].get("kills")}/{blue_team[3][4].get("deaths")}/{blue_team[3][4].get("assists")} // Combat score: {blue_team[3][5]}
+          {blue_team[4][0]}#{blue_team[4][1]} // {blue_team[4][2]} // {blue_team[4][3]} // K/D/A: {blue_team[4][4].get("kills")}/{blue_team[4][4].get("deaths")}/{blue_team[4][4].get("assists")} // Combat score: {blue_team[4][5]}
+          
+          Mode: {str(metadata.get("mode"))}
+          Kampen sluttede {str(teams["red"]["rounds_won"])} - {str(teams["blue"]["rounds_won"])} på {str(metadata.get("map"))}"""
+
+        user = await bot.fetch_user(str(userId))
+        await user.send(cleandoc(match))
+        await status.edit(content="PB sendt med kamp detaljer")
 
 
 bot.run(os.getenv('DISCORD TOKEN'))
